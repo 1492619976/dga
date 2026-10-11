@@ -326,7 +326,25 @@ def build_meta_db() -> None:
     print(f"     standards={len(STANDARDS)} metrics={len(METRICS)} etl={len(ETL_SQLS)} mapping={len(REPORT_MAPPING)}")
 
 
+def build_bigdata_env() -> None:
+    """Kafka/HDFS/ZK demo 环境种子（幂等）。"""
+    from dga.tools.bigdata_tools import HDFS_ROOT, init_bigdata_env
+
+    init_bigdata_env()
+    (HDFS_ROOT / "user/dga/data").mkdir(parents=True, exist_ok=True)
+    (HDFS_ROOT / "user/dga/data/README").write_text(
+        "DGA demo HDFS（本地模拟）\n/user/dga/data  原始数据落盘\n/user/dga/report 报送文件\n/user/dga/tmp    临时对账\n", encoding="utf-8")
+    # 从业务库导一份 CSV 到 HDFS（演示 hdfs_cat 真内容）——不依赖 pandas，手动拼
+    import duckdb as _d
+    cur = _d.connect(str(BUSINESS_DB), read_only=True).execute("SELECT * FROM ods_customer_src LIMIT 20")
+    cols = [d[0] for d in cur.description]
+    lines = [",".join(cols)] + [",".join(repr(v) if v is not None else "" for v in row) for row in cur.fetchall()]
+    (HDFS_ROOT / "user/dga/data/ods_customer_src_head.csv").write_text("\n".join(lines), encoding="utf-8")
+    print(f"[ok] bigdata env -> kafka/zk seed + {HDFS_ROOT}")
+
+
 if __name__ == "__main__":
     build_business_db()
     build_meta_db()
+    build_bigdata_env()
     print("demo ready. try: duckdb demo/bank_retail.duckdb 'SELECT COUNT(*) FROM ods_customer_src'")

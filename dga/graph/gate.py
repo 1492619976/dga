@@ -10,7 +10,7 @@ import secrets
 import sqlite3
 from datetime import datetime, timedelta
 
-from .meta import store
+from ..meta import store
 
 PLAN_TTL_MINUTES = 5  # 确认后 5 分钟内有效
 

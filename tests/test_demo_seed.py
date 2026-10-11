@@ -26,10 +26,19 @@ def test_seed_counts():
 
 
 def test_dirty_table_compliance_gap():
-    """脏源表 12 字段、贯标 3 个 → 贯标率 25%（落标检查演示位）。"""
+    """脏源表 12 字段、贯标 3 个 → 贯标率 25%（落标检查演示位）。
+
+    幂等：router 剧本测试会往这张表写贯标关系，断言前先恢复种子绑定状态。
+    """
+    from demo.build_demo import ODS_COLS
     conn = sqlite3.connect(META_DB)
     conn.row_factory = sqlite3.Row
     tid = conn.execute("SELECT id FROM meta_table WHERE table_name='ods_customer_src'").fetchone()[0]
+    seed_bind = {name: std for name, _t, _c, _n, _p, std in ODS_COLS}
+    for name, std in seed_bind.items():
+        conn.execute("UPDATE meta_column SET compliance_id=? WHERE table_id=? AND col_name=?",
+                     (std, tid, name))
+    conn.commit()
     cols = conn.execute("SELECT compliance_id FROM meta_column WHERE table_id=?", (tid,)).fetchall()
     assert len(cols) == 12
     bound = [c for c in cols if c["compliance_id"]]

@@ -1,0 +1,4 @@
+DGA demo HDFS（本地模拟）
+/user/dga/data  原始数据落盘
+/user/dga/report 报送文件
+/user/dga/tmp    临时对账
