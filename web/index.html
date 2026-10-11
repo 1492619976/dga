@@ -52,7 +52,7 @@
 <header>
   <div class="logo">🤖 DGA<span> · Data Governance Agent</span></div>
   <div class="tag">对话式数据接入 / 治理 / 报送</div>
-  <div class="tag">v0.1 <b>规则路由模式</b> · LLM 编排 W12 接入</div>
+  <div class="tag">v0.2 全功能 <b>规则路由模式</b> · LLM 编排 W12 接入</div>
   <div class="tag" style="margin-left:auto">Apache 工具：Flink · Kafka · HDFS · ZooKeeper · Flume <b>(demo)</b></div>
 </header>
 <div class="wrap">
@@ -116,8 +116,8 @@ async function doSend(text){
         toolRow.innerHTML=`<span class="dot"></span>🔧 ${data.tool}`;chat.appendChild(toolRow);chat.scrollTop=chat.scrollHeight;
       }else if(ev==='token'){
         if(toolRow){toolRow.classList.add('done');toolRow=null}
-        if(!cur){cur=add('agent','<span id="tw"></span><span class="cursor"></span>')}
-        $('tw').innerHTML+=md(data.text);
+        if(!cur){cur=add('agent','<span class="tw"></span><span class="cursor"></span>')}
+        cur.querySelector('.tw').innerHTML+=md(data.text);
         chat.scrollTop=chat.scrollHeight;
       }else if(ev==='plan_card'){
         const p=add('agent plan',`<div class="pt">🔐 变更计划卡 #${data.plan_id}</div>`

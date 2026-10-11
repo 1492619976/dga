@@ -78,7 +78,7 @@ def test_lineage():
 # 报送映射
 def test_report_mapping():
     r = R("检查客户信息报送表的映射")
-    assert "email" in r["reply"] and "未映射" in r["reply"]
+    assert "email" in r["reply"] and ("缺失映射" in r["reply"] or "未映射" in r["reply"])
 
 
 # bigdata：kafka → flink

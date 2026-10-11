@@ -26,11 +26,11 @@ class SqlGuardError(PermissionError):
     """黑名单命中。message 会进入审计日志（status=blocked）。"""
 
 
-def check(sql: str, *, allow_attach: bool = False) -> str:
+def check(sql: str, *, allow_attach: bool = False, allow_create_temp: bool = False) -> str:
     """校验并返回原 SQL；命中黑名单抛 SqlGuardError。
 
-    幂等、零副作用、纯字符串操作——工具层在执行前调用，
-    是提示词红线之外的第二道（也是最后一道）防线。
+    allow_attach / allow_create_temp 是 dry_run_check 专用特例
+    （临时对账表 _dga_check_ 前缀，用完即删）。
     """
     verb = _head_verb(sql)
     if verb == "WITH":
@@ -38,6 +38,11 @@ def check(sql: str, *, allow_attach: bool = False) -> str:
     if verb == "":
         raise SqlGuardError("empty or unparsable SQL")
     if verb in ("ATTACH", "DETACH") and allow_attach:
+        return sql
+    if verb == "CREATE" and allow_create_temp:
+        if not re.search(r"^\s*CREATE\s+(OR\s+REPLACE\s+)?(GLOBAL\s+|LOCAL\s+)?TEMP(ORARY)?\s+TABLE",
+                          sql, re.I):
+            raise SqlGuardError("only CREATE TEMP TABLE is allowed for dry-run")
         return sql
     if verb in _READONLY_VERBS:
         return sql

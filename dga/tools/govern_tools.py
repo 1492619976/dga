@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from typing import Any
 
@@ -128,10 +129,18 @@ def run_quality_rules(table: str, session: str = "web") -> dict[str, Any]:
         with _c() as conn:
             tid = store.find_table(conn, 1, "main", table)["id"]
             for r in gen_quality_rules(table):
-                fails = biz.execute(check(r["sql"])).fetchone()[0]
+                try:
+                    fails = biz.execute(check(r["sql"])).fetchone()[0]
+                except Exception:  # 列不存在（模板按 ods 定制）→ 跳过该规则
+                    continue
                 results.append({**r, "fail_rows": fails,
                                 "pass_rate": round((total - fails) / max(total, 1), 4)})
-                store.save_dq_rule(conn, tid, r["dim"], r["sql"])
+                rid = store.save_dq_rule(conn, tid, r["dim"], r["sql"])
+                conn.execute("UPDATE dq_rule SET last_result=? WHERE id=?",
+                             (json.dumps({"fail_rows": fails, "pass_rate":
+                                          round((total - fails) / max(total, 1), 4)},
+                                         ensure_ascii=False), rid))
+                conn.commit()
             store.append_audit(conn, session, "govern", "run_quality_rules", table, None, "ok")
     return {"table": table, "rows": total, "rules": results,
             "overall_pass": round(sum(r["pass_rate"] for r in results) / len(results), 4)}
@@ -159,8 +168,10 @@ def lineage(obj: str, direction: str = "downstream", depth: int = 2) -> dict[str
     def walk(start: str, d: int) -> list[str]:
         seen, frontier = {start}, [start]
         for _ in range(d):
-            nxt = [b for a, b in edges if a in frontier and b not in seen]
-            nxt += [a for a, b in edges if b in frontier and a not in seen] if direction == "both" else []
+            if direction == "upstream":
+                nxt = [a for a, b in edges if b in frontier and a not in seen]
+            else:
+                nxt = [b for a, b in edges if a in frontier and b not in seen]
             frontier, seen = nxt, seen | set(nxt)
         return sorted(seen - {start})
 
@@ -200,11 +211,185 @@ def query_metric(name: str) -> dict[str, Any]:
     return m
 
 
-# ---- TODO W12/W13 ----
-def diff_metrics(metric_a: str, metric_b: str):  # pragma: no cover
-    """招牌工具：sqlglot 解析两指标 SQL，四类 diff（表/过滤/粒度/JOIN）逐类输出。"""
-    raise NotImplementedError("W12: sqlglot AST diff")
+# ---- 元数据包：描述补全（词典版） / 分级 ----
+
+_FIELD_DICT = {
+    "cust": "客户", "customer": "客户", "cert": "证件", "type": "类型", "no": "号码",
+    "num": "编号", "name": "姓名", "mobile": "手机", "phone": "手机", "tel": "电话",
+    "email": "电子邮箱", "mail": "邮箱", "addr": "联系地址", "address": "地址", "home": "居住",
+    "open": "开户", "dt": "日期", "date": "日期", "time": "时间", "upd": "更新", "update": "更新",
+    "sts": "状态", "status": "状态", "bal": "余额", "balance": "余额", "amt": "金额", "amount": "金额",
+    "organ": "机构", "org": "机构", "channel": "渠道", "currency": "币种", "risk": "风险",
+    "prod": "产品", "product": "产品", "trx": "交易", "trade": "交易", "trans": "交易",
+    "acct": "账户", "account": "账户", "gender": "性别", "sex": "性别", "id": "标识",
+    "src": "来源", "code": "编码", "level": "等级", "cnt": "数量", "count": "数量",
+}
 
 
-def root_cause(rule_id: int):  # pragma: no cover
-    raise NotImplementedError("W13: 血缘+历史归因")
+def _suggest_desc(col_name: str) -> str:
+    tokens = re.split(r"[_\s]|(?<=[a-z])(?=[A-Z])", col_name)
+    parts = [_FIELD_DICT.get(t.lower(), "") for t in tokens if t]
+    words = [p for p in parts if p]
+    if not words:
+        return f"（待人工确认）{col_name}"
+    return "".join(dict.fromkeys(words))  # 去重保序
+
+
+def enrich_description(table: str) -> dict[str, Any]:
+    """无注释字段生成中文描述建议（v0.2 词典版；W12 换 LLM 依据样例值生成）。"""
+    with _c() as conn:
+        t = store.find_table(conn, 1, "main", table)
+        if not t:
+            return {"error": f"元数据库未登记表: {table}"}
+        cols = store.columns_of(conn, t["id"])
+    suggestions = [{"col": c["col_name"], "suggest": _suggest_desc(c["col_name"])}
+                   for c in cols if not c["comment"]]
+    return {"table": table, "total": len(cols), "no_comment": len(suggestions),
+            "suggestions": suggestions}
+
+
+def write_descriptions(table: str, items: list[dict], session: str = "web") -> int:
+    """审批后写回描述。items=[{col, comment}]。"""
+    with _c() as conn:
+        tid = store.find_table(conn, 1, "main", table)["id"]
+        n = 0
+        for it in items:
+            n += store.update_column_comment(conn, tid, it["col"], it["comment"])
+        store.append_audit(conn, session, "govern", "enrich_description", f"{table}:{len(items)}", None, "ok")
+    return n
+
+
+def classify_level(table: str) -> dict[str, Any]:
+    """表级分类分级：C2 敏感(含PII) / C3 内部 / C4 公开。"""
+    from . import ingest_tools as ing
+    p = ing.profile_table(table)
+    pii_cols = [c["col"] for c in p["columns"] if c.get("suspected_pii")]
+    level = "C2-敏感" if pii_cols else ("C4-公开" if table.startswith("dim_") else "C3-内部")
+    return {"table": table, "pii_fields": pii_cols, "level": level,
+            "basis": "命中 PII 字段 → C2" if pii_cols else "无 PII 命中，按业务域定级"}
+
+
+def write_level(table: str, level: str, session: str = "web") -> None:
+    with _c() as conn:
+        t = store.find_table(conn, 1, "main", table)
+        conn.execute("UPDATE meta_table SET pii_level=? WHERE id=?", (level, t["id"]))
+        conn.commit()
+        store.append_audit(conn, session, "govern", "classify_level", f"{table}:{level}", None, "ok")
+
+
+# ---- 质量包：根因 / 退役 ----
+
+def root_cause(rule_name: str, table: str) -> dict[str, Any]:
+    """根因分析：血缘上游 + 规则语义 → 归因假设 + 验证建议（v0.2 启发式）。"""
+    up = lineage(table, direction="upstream")
+    # upstream = walk 的另一向：直接从 edges 反查
+    with _c() as conn:
+        etls = store.list_etl_sql(conn)
+    feeders = [e["name"] for e in etls if e["target_table"] == table]
+    hypotheses = [
+        f"规则【{rule_name}】在 {table} 上失败，可能来源：",
+        f"① 上游供给：该表由 ETL 任务 {('、'.join(feeders)) or '（无登记任务，直连源）'} 供给，"
+        f"上游表 {('、'.join(up.get('downstream') or [])) or '（无登记上游）'} 的字段质量未验证",
+        "② 源头录入：若为 ods 源表，脏值通常来自业务系统录入环节（如码值 '9' 为系统默认/未知态）",
+        "③ 时间窗口：若失败集中在近期批次，检查增量同步的 where 条件与断点",
+    ]
+    return {"rule": rule_name, "table": table, "hypotheses": hypotheses,
+            "verify": f"对上游执行质量规则（说：跑一下 {up.get('downstream') or ['dim_customer'][0]} 质量规则）"}
+
+
+def retire_rules(table: str, session: str = "web") -> dict[str, Any]:
+    """连续全通过规则建议退役；返回建议清单（执行写状态须过审批）。"""
+    with _c() as conn:
+        t = store.find_table(conn, 1, "main", table)
+        rows = store.rows(conn.execute(
+            "SELECT id, dim, expr_sql, last_result, status FROM dq_rule WHERE table_id=?",
+            (t["id"],)))
+    to_retire = [r for r in rows if r["status"] == "active"
+                 and r["last_result"] and '"fail_rows": 0' in r["last_result"]]
+    keep = [r for r in rows if r not in to_retire]
+    return {"table": table, "total_rules": len(rows),
+            "retire_suggestion": [{"id": r["id"], "dim": r["dim"]} for r in to_retire],
+            "keep": len(keep)}
+
+
+def do_retire(rule_ids: list[int], session: str = "web") -> int:
+    with _c() as conn:
+        n = 0
+        for rid in rule_ids:
+            cur = conn.execute("UPDATE dq_rule SET status='retired' WHERE id=? AND status='active'", (rid,))
+            n += cur.rowcount
+        conn.commit()
+        store.append_audit(conn, session, "govern", "retire_rules", str(rule_ids), None, "ok")
+    return n
+
+
+# ---- 指标包：口径 diff（sqlglot 招牌） / 登记 ----
+
+def diff_metrics(metric_a: str, metric_b: str) -> dict[str, Any]:
+    """sqlglot 解析两指标 SQL AST，四类差异逐类输出 + 一句话结论。"""
+    import sqlglot
+    from sqlglot import exp
+
+    ma, mb = get_metric(metric_a), get_metric(metric_b)
+    if not ma or not mb:
+        return {"error": f"指标未登记: {ma is None and metric_a or metric_b}"}
+    try:
+        ea = sqlglot.parse_one(ma["calc_sql"])
+        eb = sqlglot.parse_one(mb["calc_sql"])
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"SQL 解析失败: {e}"}
+
+    def tables(e):
+        return sorted({t.name for t in e.find_all(exp.Table)})
+
+    def where(e):
+        w = e.args.get("where")
+        return w.sql(dialect="duckdb") if w else "(无)"
+
+    def group(e):
+        g = e.args.get("group")
+        return g.sql(dialect="duckdb") if g else "(全量汇总)"
+
+    def joins(e):
+        return sorted(j.sql(dialect="duckdb") for j in e.find_all(exp.Join))
+
+    ta, tb = tables(ea), tables(eb)
+    diffs = {
+        "tables": {"same": ta == tb, "a": ta, "b": tb},
+        "filters": {"same": where(ea) == where(eb), "a": where(ea), "b": where(eb)},
+        "grain": {"same": group(ea) == group(eb), "a": group(ea), "b": group(eb)},
+        "joins": {"same": joins(ea) == joins(eb), "a": joins(ea), "b": joins(eb)},
+    }
+    changed = [k for k, v in diffs.items() if not v["same"]]
+    if not changed:
+        conclusion = "两指标口径完全一致"
+    elif changed == ["filters"]:
+        conclusion = f"两口径仅过滤条件不同（{metric_a} vs {metric_b}）"
+    else:
+        conclusion = f"两口径差异类型：{'、'.join(changed)}"
+    return {"metric_a": metric_a, "metric_b": metric_b, "diffs": diffs,
+            "changed_dims": changed, "conclusion": conclusion}
+
+
+def register_metric(name: str, biz_text: str, calc_sql: str, owner: str = "数据部",
+                    freq: str = "日", session: str = "web") -> dict[str, Any]:
+    """登记新指标：sqlglot 先校验可解析 → 写入（调用方须已过审批）。"""
+    import sqlglot
+    try:
+        sqlglot.parse_one(calc_sql)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"SQL 不可解析，拒绝登记: {e}"}
+    with _c() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO metric_def(name,biz_text,calc_sql,owner,freq,grain,registered_at) "
+                "VALUES (?,?,?,?,?,?,datetime('now'))",
+                (name, biz_text, calc_sql, owner, freq, "待定"))
+            conn.commit()
+        except Exception as e:  # noqa: BLE001
+            return {"error": f"登记失败（重名？）: {e}"}
+        store.append_audit(conn, session, "govern", "register_metric", name, None, "ok")
+        return {"id": cur.lastrowid, "name": name, "ok": True}
+
+
+# ---- 旧 TODO 清理 ----

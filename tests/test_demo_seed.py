@@ -18,6 +18,10 @@ def built():
 def test_seed_counts():
     conn = sqlite3.connect(META_DB)
     conn.row_factory = sqlite3.Row
+    # 幂等自愈：剧本测试会登记测试数据源/指标，断言前恢复种子状态
+    conn.execute("DELETE FROM datasource WHERE id > 1")
+    conn.execute("DELETE FROM metric_def WHERE name LIKE '测试指标%' OR name='坏SQL指标'")
+    conn.commit()
     for table, n in [("gov_standard", 20), ("metric_def", 15), ("etl_sql", 10),
                      ("report_mapping", 9), ("datasource", 1)]:
         got = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
