@@ -1,0 +1,22 @@
+# deepeval 评测集骨架（v0.3 扩到 50 问；结构见方案 7.3）
+# 运行：python evals/run_eval.py（需 LLM 端点 + deepeval，W14）
+- id: G-001
+  question: 日活跃客户数的口径是什么？
+  expect_claims:
+    - 指出统计对象是 dwd_cust_event 表
+    - 指出去重计数 COUNT(DISTINCT cust_no)
+    - 不编造未定义的过滤条件
+  tools_expect: [query_metric]
+- id: G-002
+  question: 对公客户日均余额和零售客户日均余额的口径差在哪？
+  expect_claims:
+    - 指出两指标出自同一表 dwm_cust_balance_daily
+    - 指出差异只在客户类型过滤条件（cust_type 2 vs 1）
+  tools_expect: [diff_metrics]
+- id: G-003
+  question: customer 表 cert_type 字段该贯什么标？
+  expect_claims:
+    - 推荐 STD-C-002（证件类型）
+    - 给出置信度与理由
+    - 不直接执行绑定（须审批）
+  tools_expect: [recommend_standards]

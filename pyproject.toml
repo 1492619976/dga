@@ -1,0 +1,54 @@
+[project]
+name = "dga"
+version = "0.1.0"
+description = "DGA - Data Governance Agent: ingest, govern and report on your data, all in one conversation"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "DGA contributors" }]
+keywords = ["data-governance", "agent", "llm", "mcp", "metadata", "data-quality"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Database",
+]
+
+dependencies = [
+    # 编排（W12 D1 起用；骨架期未安装亦可 import dga.* 的纯逻辑模块）
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+    # 工具面
+    "fastmcp>=2.0",
+    # SQL 解析（落标/口径diff/血缘）
+    "sqlglot>=25.0",
+    # 数据底座
+    "duckdb>=1.0",
+    # Web 壳
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+demo = []          # duckdb 已在主依赖
+rag = ["chromadb>=0.5", "rank-bm25>=0.2"]
+eval = ["deepeval>=1.0"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+dga = "dga.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dga"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
